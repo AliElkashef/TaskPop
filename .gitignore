@@ -1,0 +1,7 @@
+.DS_Store
+.build/
+build/
+*.elf
+*.map
+*.log
+__pycache__/
