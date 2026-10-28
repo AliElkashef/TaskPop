@@ -248,8 +248,10 @@ void drawSettings() {
     card(18,192,32,23,YELLOW,INK,4);center("-",34,204,2);
     center(String(settings.rgbLevel)+"%",119,203,2);
     card(188,192,32,23,YELLOW,INK,4);center("+",204,204,2);
-    card(10,235,218,31,settings.rgbOn?PINK:CREAM,INK,6);label("RGB light",20,242,2);center(settings.rgbOn?"ON":"OFF",200,251,2);
-    card(10,277,218,31,settings.idleOn?YELLOW:CREAM,INK,6);label("Idle colors",20,284,2);center(settings.idleOn?"ON":"OFF",200,293,2);
+    card(10,235,218,31,settings.rgbOn?PINK:CREAM,INK,6);label("Enable LED",20,242,2);center(settings.rgbOn?"ON":"OFF",200,251,2);
+    card(10,277,218,31,settings.rgbOn && settings.idleOn?YELLOW:CREAM,settings.rgbOn?INK:MUTED,6);
+    label("Idle colors",20,284,2,settings.rgbOn?INK:MUTED);
+    center(settings.rgbOn?(settings.idleOn?"ON":"OFF"):"--",200,293,2,settings.rgbOn?INK:MUTED);
   } else {
     card(10,98,218,57,CREAM,YELLOW,8);label("Default focus time",20,104,2);
     card(18,125,32,23,YELLOW,INK,4);center("-",34,137,2);
@@ -457,7 +459,7 @@ void tap(int x,int y) {
       else if(hit(x,y,18,192,32,23)){settings.rgbLevel=max(0,(int)settings.rgbLevel-10);changed=true;}
       else if(hit(x,y,188,192,32,23)){settings.rgbLevel=min(100,(int)settings.rgbLevel+10);changed=true;}
       else if(hit(x,y,10,235,218,31)){settings.rgbOn=!settings.rgbOn;changed=true;}
-      else if(hit(x,y,10,277,218,31)){settings.idleOn=!settings.idleOn;changed=true;}
+      else if(settings.rgbOn && hit(x,y,10,277,218,31)){settings.idleOn=!settings.idleOn;changed=true;}
     } else {
       if(hit(x,y,18,125,32,23)){settings.focusMinutes=max(1,(int)settings.focusMinutes-1);changed=true;}
       else if(hit(x,y,188,125,32,23)){settings.focusMinutes=min(90,(int)settings.focusMinutes+1);changed=true;}
@@ -530,7 +532,7 @@ void diagnostics() {
       Serial.printf("TASKPOP view=%d count=%d page=%d stored=%d draft=%s\n",view,count,page,storageOK,draft.c_str());
       for(int i=0;i<count;i++)Serial.printf("TASK %d %d %s\n",i,tasks[i].done,tasks[i].text);
     } else if(serialLine=="CONFIG") {
-      Serial.printf("CONFIG version=1.4 lcd_rotation=%d touch_rotation=%d calibration=%d,%d,%d,%d\n",lcd.getRotation(),SCREEN_ROTATION,xmin,xmax,ymin,ymax);
+      Serial.printf("CONFIG version=1.4.1 lcd_rotation=%d touch_rotation=%d calibration=%d,%d,%d,%d\n",lcd.getRotation(),SCREEN_ROTATION,xmin,xmax,ymin,ymax);
     } else if(serialLine=="FOCUSSTATUS") {
       settleFocus();
       Serial.printf("FOCUS view=%d state=%d minutes=%u remaining=%lu pulse=%d task=%lu\n",view,focus.state,focus.minutes,(unsigned long)focus.remaining(millis()),focus.alarmPulse(millis()),(unsigned long)selectedTaskId);
@@ -590,7 +592,7 @@ void setup() {
   ledcSetup(0,5000,8);ledcAttachPin(21,0);applyBacklight();
   touchBus.begin(25,39,32);touch.begin(touchBus);touch.setRotation(SCREEN_ROTATION);
   Serial.println("TASKPOP TOUCH OK");
-  beginGlow();draw();Serial.println("TASKPOP READY 1.4 TASK FOCUS + SETTINGS");
+  beginGlow();draw();Serial.println("TASKPOP READY 1.4.1 TASK FOCUS + SETTINGS");
 }
 void loop() {
   static bool held=false;static uint32_t releasedAt=0, started=0;static int rawX=0,rawY=0,samples=0;

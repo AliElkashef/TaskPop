@@ -44,7 +44,7 @@ arduino-cli compile \
 
 ## Install the ready-built firmware
 
-Download and extract `TaskPop-firmware-v1.4.zip`. With esptool installed, run this from the extracted folder, replacing the port:
+Download and extract `TaskPop-firmware-v1.4.1.zip`. With esptool installed, run this from the extracted folder, replacing the port:
 
 ```sh
 python -m esptool --chip esp32 --port /dev/cu.usbserial-110 --baud 115200 \

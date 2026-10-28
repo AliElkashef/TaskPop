@@ -58,7 +58,7 @@ Follow the moving progress ring as the timer counts down. **Pause** keeps your r
 
 ## Set the mood
 
-Open **SETTINGS** beside **FOCUS** to adjust screen and RGB brightness, switch RGB lighting or idle colors off, set your default focus duration, control the flashing completion alert, or calibrate the touchscreen. Changes are saved automatically. Restore defaults resets these preferences while keeping your tasks and touch calibration.
+Open **SETTINGS** beside **FOCUS** to adjust screen and RGB brightness, switch RGB lighting or idle colors off, set your default focus duration, control the flashing completion alert, or calibrate the touchscreen. **Enable LED** is the master light switch. When it is off, **Idle colors** is dimmed and unavailable; switching it back on restores your idle-color preference. Changes are saved automatically. Restore defaults resets these preferences while keeping your tasks and touch calibration.
 
 <div align="center">
 <img src="settings-display.png" width="240" alt="Task Pop settings for screen brightness, RGB brightness and idle colors">
@@ -76,7 +76,7 @@ CYD boards come in different variants; the included display and touch configurat
 
 ## Get started
 
-1. Get the source or [ready-built firmware](TaskPop-firmware-v1.4.zip).
+1. Get the source or [ready-built firmware](TaskPop-firmware-v1.4.1.zip).
 2. Follow the short [setup guide](SETUP.md) for your display.
 3. Power it over USB, tap **+**, and make your first plan.
 
