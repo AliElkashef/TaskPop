@@ -27,7 +27,8 @@ Task Pop turns a small ESP32 touchscreen into a dedicated home for your daily ta
 - **Stay in control.** Mark tasks done, delete them, or undo an accidental deletion.
 - **Pick up where you left off.** Tasks stay saved when power is disconnected.
 - **Feel the progress.** The onboard RGB LED responds with a different light gesture for each action.
-- **Find your focus.** Set a Pomodoro timer, pause when you need to, and get a screen-and-light celebration when time is up.
+- **Focus on a task.** Pick what to work on, run a Pomodoro session, and keep its focus time and completed-session count with that task.
+- **Make it yours.** Adjust screen brightness, RGB lighting, alerts, and your default focus duration in Settings.
 - **Keep it simple.** Up to 30 tasks, three per page, with a bright teal, cream, pink, and yellow interface.
 
 ## A little personality, built in
@@ -45,13 +46,25 @@ Light animations run alongside the interface, so you can keep using the touchscr
 
 ## Make time for one thing
 
-Tap the pink **FOCUS** button beside **TOUCH** to open your Pomodoro timer. Pick **5, 25, or 50 minutes**, or adjust the duration from **1 to 90 minutes**.
+Tap the pink **FOCUS** button, choose a task, and open its Pomodoro timer. Pick **5, 25, or 50 minutes**, or adjust the duration from **1 to 90 minutes**. The task name stays visible throughout the session.
 
 <div align="center">
-<img src="focus-setup.png" width="240" alt="Task Pop Pomodoro setup with a 25-minute session and quick duration presets">
+<img src="focus-setup.png" width="240" alt="Task Pop Pomodoro setup linked to the deep work task, with a 25-minute session and duration presets">
+&nbsp;
+<img src="focus-running.png" width="240" alt="Task-linked focus session with countdown, progress ring, Pause and Stop">
 </div>
 
-Follow the moving progress ring as the timer counts down. **Pause** keeps your remaining time; **Stop** takes you straight back to your tasks. At the end, the screen pulses yellow and the RGB LED flashes green until you tap **BACK TO TASKS**. The duration you start with is remembered for next time.
+Follow the moving progress ring as the timer counts down. **Pause** keeps your remaining time; **Stop** takes you straight back to your tasks. At the end, the screen pulses yellow and the RGB LED flashes green until you tap **BACK TO TASKS**. Each task keeps its accumulated focus time and completed sessions, even after renaming or restoring it with Undo.
+
+## Set the mood
+
+Open **SETTINGS** beside **FOCUS** to adjust screen and RGB brightness, switch RGB lighting or idle colors off, set your default focus duration, control the flashing completion alert, or calibrate the touchscreen. Changes are saved automatically. Restore defaults resets these preferences while keeping your tasks and touch calibration.
+
+<div align="center">
+<img src="settings-display.png" width="240" alt="Task Pop settings for screen brightness, RGB brightness and idle colors">
+&nbsp;
+<img src="settings-focus.png" width="240" alt="Task Pop settings for the default focus duration, screen alert, touch calibration and restoring defaults">
+</div>
 
 ## Made for a small screen
 
@@ -63,11 +76,11 @@ CYD boards come in different variants; the included display and touch configurat
 
 ## Get started
 
-1. Get the source or [ready-built firmware](TaskPop-firmware-v1.3.zip).
+1. Get the source or [ready-built firmware](TaskPop-firmware-v1.4.zip).
 2. Follow the short [setup guide](SETUP.md) for your display.
 3. Power it over USB, tap **+**, and make your first plan.
 
-Tap a task's checkbox to complete it, or its text to edit it. **TOUCH** at the bottom opens touchscreen calibration.
+Tap a task's checkbox to complete it, or its text to edit it. Touch calibration is under **SETTINGS → FOCUS / TOUCH**.
 
 <div align="center">
 

@@ -44,7 +44,7 @@ arduino-cli compile \
 
 ## Install the ready-built firmware
 
-Download and extract `TaskPop-firmware-v1.3.zip`. With esptool installed, run this from the extracted folder, replacing the port:
+Download and extract `TaskPop-firmware-v1.4.zip`. With esptool installed, run this from the extracted folder, replacing the port:
 
 ```sh
 python -m esptool --chip esp32 --port /dev/cu.usbserial-110 --baud 115200 \
@@ -71,14 +71,17 @@ A full flash erase removes saved tasks and calibration. The downloadable firmwar
 - **Undo** is available for eight seconds after deletion.
 - Store up to **30 tasks**, each up to **64 characters**, across pages of three.
 - The keyboard supports English letters, numbers, and symbols.
-- For touch alignment, tap **TOUCH** and press the center of each of the four targets. Calibration is saved automatically.
+- For touch alignment, open **SETTINGS → FOCUS / TOUCH → Calibrate touch** and press the center of each of the four targets. Calibration is saved automatically. The **x** cancels calibration.
 - Use a deliberate press or a suitable stylus on the resistive touchscreen.
-- Tap the pink **FOCUS** button for the Pomodoro timer. Choose 1–90 minutes with **−/+**, or use the 5/25/50-minute presets, then tap **START FOCUS**.
+- Tap the pink **FOCUS** button and select a task. Choose 1–90 minutes with **−/+**, or use the 5/25/50-minute presets, then tap **START FOCUS**. Tap the task name before starting to select a different task.
 - **Pause/Resume** preserves remaining time. **Stop** returns directly to the task list.
 - When the countdown finishes, the screen and RGB LED pulse until **BACK TO TASKS** is pressed. The selected duration is saved; an active session resets after power loss.
+- A task keeps its total focus time in whole seconds and its completed-session count. Time is saved on pause, Stop, and completion. An interrupted session does not count as completed; time since the last save may be lost if power is disconnected. Completing a timer does not automatically mark the task done.
+- **SETTINGS → DISPLAY** controls screen brightness (10–100%), RGB brightness (0–100%), the RGB master switch and idle colors. **FOCUS / TOUCH** controls the default timer duration and screen flashing alert. All preferences apply immediately and survive restart.
+- **Restore defaults** asks for confirmation and resets preferences only. Existing tasks, focus history and calibration remain intact. Version 1.4 automatically migrates older saved task records to include stable task IDs and focus history.
 
 ## Files
 
-`TaskPop.ino` contains the interface and task storage. `LedFlow.h` controls the RGB animations without blocking the interface. `FocusTimer.h` handles monotonic countdown timing, pause/resume, and the completion alert. `TaskPop_Display.h` holds the board-specific display configuration.
+`TaskPop.ino` contains the interface and task storage. `TaskData.h` defines task IDs, focus history and legacy migration; `UserSettings.h` defines persisted preferences and their safe limits. `LedFlow.h` controls the RGB animations without blocking the interface. `FocusTimer.h` handles monotonic countdown timing, pause/resume, and the completion alert. `TaskPop_Display.h` holds the board-specific display configuration.
 
 The software was checked on the device for task entry, editing, completion, deletion, undo, paging, persistence, RGB event output, and display rotation. Screenshots show sample tasks.

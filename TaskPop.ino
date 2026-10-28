@@ -5,9 +5,12 @@
 #include <Preferences.h>
 #include "LedFlow.h"
 #include "FocusTimer.h"
+#include "TaskData.h"
+#include "UserSettings.h"
 
 LedFlow glow;
 FocusTimer focus;
+UserSettings settings;
 uint8_t ledDuty[3]={255,255,255};
 const int ledPins[3]={22,16,17}; // Common-anode RGB: low = on.
 const int ledChannels[3]={4,5,6};
@@ -21,6 +24,8 @@ void updateGlow() {
     float breath=.28f+.055f*sinf(now*.002f);
     c=LedFlow::scale(focus.state==FocusTimer::PAUSED?LedFlow::Color{.94f,.33f,.84f}:LedFlow::Color{.13f,.43f,1.f},breath);
   }
+  if(!settings.rgbOn || (focus.state==FocusTimer::READY && glow.event==LedFlow::IDLE && !settings.idleOn))c={0,0,0};
+  c=LedFlow::scale(c,settings.rgbLevel/100.f);
   float components[3]={c.r,c.g,c.b};
   for(int i=0;i<3;i++) {
     ledDuty[i]=255-LedFlow::pwm(components[i]);
@@ -48,12 +53,17 @@ constexpr uint8_t SCREEN_ROTATION=0; // Portrait, USB connector at the bottom.
 // A 4-bit indexed framebuffer needs only 38 KB and preserves these exact RGB565 colors.
 const uint16_t TEAL=0, CREAM=1, INK=2, PINK=3, YELLOW=4, BLUE=5, GRID=6, MUTED=7;
 const uint16_t palette[16]={0x1C70,0xF79B,0x2925,0xEABA,0xF72D,0x223B,0x1BAD,0x6BCC};
-struct Task { char text[MAX_TEXT+1]; bool done; };
+using Task=TaskData::Task;
 Task tasks[MAX_TASKS], removed;
 int count=0, page=0, editing=-1, removedAt=-1;
+uint32_t nextTaskId=1,selectedTaskId=0,creditedFocusMs=0;
+bool focusCompletionLogged=false;
+bool migrationPending=false;
+int pickPage=0,settingsPage=0;
+bool resetSettingsConfirm=false;
 String draft, serialLine;
 bool upper=false, symbols=false, dirty=true, storageOK=true;
-enum View { LIST, EDIT, CALIBRATE, FOCUS };
+enum View { LIST, EDIT, CALIBRATE, FOCUS, PICK_TASK, SETTINGS };
 View view=LIST;
 uint32_t undoUntil=0, noticeUntil=0;
 String notice;
@@ -83,19 +93,26 @@ void background() {
 void tell(String s) { notice=s;noticeUntil=millis()+2300;dirty=true; }
 bool saveTasks() {
   // One blob keeps the task count and records in a single atomic NVS update.
-  struct Data { uint32_t magic; uint16_t version; uint16_t size; Task rows[MAX_TASKS]; } data={};
-  data.magic=0x54504F50;data.version=1;data.size=count;
+  TaskData::Store data={};
+  data.magic=TaskData::MAGIC;data.version=2;data.size=count;data.nextId=nextTaskId;
   memcpy(data.rows,tasks,sizeof(tasks));
   storageOK=store.putBytes("tasks",&data,sizeof(data))==sizeof(data);
   if(!storageOK) {tell("Save failed - try again");glow.trigger(LedFlow::ERROR,millis());}
   return storageOK;
 }
 void loadTasks() {
-  struct Data { uint32_t magic; uint16_t version; uint16_t size; Task rows[MAX_TASKS]; } data={};
-  if(store.getBytesLength("tasks")==sizeof(data) && store.getBytes("tasks",&data,sizeof(data))==sizeof(data)
-    && data.magic==0x54504F50 && data.version==1 && data.size<=MAX_TASKS) {
-    count=data.size; memcpy(tasks,data.rows,sizeof(tasks));
+  TaskData::Store data={};bool migrated=false,loaded=false;
+  size_t size=store.getBytesLength("tasks");
+  if(size==sizeof(data)) {
+    loaded=store.getBytes("tasks",&data,sizeof(data))==sizeof(data) && data.magic==TaskData::MAGIC && data.version==2 && data.size<=MAX_TASKS;
+  } else if(size==sizeof(TaskData::LegacyStore)) {
+    TaskData::LegacyStore old={};
+    migrated=store.getBytes("tasks",&old,sizeof(old))==sizeof(old) && TaskData::migrate(old,data);loaded=migrated;
+  }
+  if(loaded) {
+    count=data.size;nextTaskId=data.nextId?data.nextId:count+1;memcpy(tasks,data.rows,sizeof(tasks));
     for(int i=0;i<count;i++) tasks[i].text[MAX_TEXT]=0;
+    migrationPending=migrated;
   }
   xmin=store.getInt("xmin",562);xmax=store.getInt("xmax",3604);
   ymin=store.getInt("ymin",544);ymax=store.getInt("ymax",3720);
@@ -106,7 +123,38 @@ void loadTasks() {
     int oldMin=xmin;xmin=4095-xmax;xmax=4095-oldMin;
     oldMin=ymin;ymin=4095-ymax;ymax=4095-oldMin;
   }
-  focus.configure(store.getUInt("focusMin",25));
+  settings.focusMinutes=store.getUInt("focusMin",25);
+  if(store.getBytesLength("uiPrefs")==sizeof(settings)) {
+    UserSettings saved;
+    if(store.getBytes("uiPrefs",&saved,sizeof(saved))==sizeof(saved) && saved.magic==settings.magic)settings=saved;
+  }
+  settings.normalize();focus.configure(settings.focusMinutes);
+}
+void applyBacklight() {ledcWrite(0,(settings.brightness*255U+50)/100);}
+void saveSettings() {
+  settings.normalize();applyBacklight();
+  if(store.putBytes("uiPrefs",&settings,sizeof(settings))!=sizeof(settings))tell("Settings save failed");
+}
+int focusedTaskIndex() {
+  if(!selectedTaskId)return -1;
+  for(int i=0;i<count;i++)if(tasks[i].id==selectedTaskId)return i;
+  return -1;
+}
+String taskSummary(int i) {
+  return String(tasks[i].sessions)+" sessions / "+String(tasks[i].focusSeconds/60)+"m "+String(tasks[i].focusSeconds%60)+"s";
+}
+void accountFocus(bool completed) {
+  int i=focusedTaskIndex();if(i<0)return;
+  uint32_t worked=focus.totalMs-focus.remaining(millis());
+  uint32_t seconds=(worked-creditedFocusMs)/1000;
+  bool changed=seconds>0;
+  tasks[i].focusSeconds+=seconds;creditedFocusMs+=seconds*1000;
+  if(completed && !focusCompletionLogged){if(tasks[i].sessions<65535)tasks[i].sessions++;focusCompletionLogged=true;changed=true;}
+  if(changed)saveTasks();
+}
+void settleFocus() {
+  focus.update(millis());
+  if(focus.state==FocusTimer::FINISHED && !focusCompletionLogged)accountFocus(true);
 }
 void drawList() {
   background();
@@ -152,10 +200,71 @@ void drawList() {
     card(10,289,218,23,YELLOW,INK,7);center("Removed  -  tap to UNDO",119,301,1);
   } else if(noticeUntil && (int32_t)(noticeUntil-millis())>0) center(notice,120,302,1,CREAM);
   else {
-    card(10,289,153,25,PINK,INK,6);
+    card(10,289,145,25,PINK,INK,6);
     ui.drawCircle(25,301,7,INK);ui.drawLine(25,301,25,297,INK);ui.drawLine(25,301,29,303,INK);
-    center("FOCUS",98,302,2);
-    card(173,290,55,23,CREAM,INK,5);center("TOUCH",200,302,1);
+    center("FOCUS",94,302,2);
+    card(163,289,65,25,YELLOW,INK,6);center("SETTINGS",195,302,1);
+  }
+}
+void taskName(String text,int x,int y,int width,int font=2,uint16_t color=INK) {
+  String a=text;
+  while(ui.textWidth(a,font)>width && a.length())a.remove(a.length()-1);
+  if(a.length()<text.length()) {
+    int space=a.lastIndexOf(' ');if(space>8)a=a.substring(0,space);
+    String b=text.substring(a.length());b.trim();
+    while(ui.textWidth(b,font)>width && b.length())b.remove(b.length()-1);
+    label(a,x,y,font,color);label(b,x,y+(font==1?11:17),font,color);
+  } else label(a,x,y+(font==1?5:7),font,color);
+}
+void drawTaskPicker() {
+  background();card(10,10,218,43,CREAM,PINK,10);label("Choose task",21,20,4);center("x",211,31,2);
+  center("WHAT WILL YOU FOCUS ON?",120,66,1,CREAM);
+  for(int row=0;row<3;row++) {
+    int i=pickPage*3+row;if(i>=count)break;
+    int y=80+row*59;
+    card(10,y,218,52,CREAM,i%2?YELLOW:PINK,8);
+    taskName(tasks[i].text,19,y+3,196,2,tasks[i].done?MUTED:INK);
+    label(taskSummary(i),20,y+39,1,MUTED);
+  }
+  card(10,267,42,33,CREAM,BLUE,6);center("<",31,283,2,pickPage?INK:MUTED);
+  center(String(pickPage+1)+" / "+String((count+2)/3),120,283,2,CREAM);
+  card(186,267,42,33,CREAM,BLUE,6);center(">",207,283,2,(pickPage+1)*3<count?INK:MUTED);
+}
+void selectedTaskStrip() {
+  int i=focusedTaskIndex();
+  card(10,58,218,29,CREAM,INK,6);
+  taskName(i>=0?String(tasks[i].text):"Choose a task",19,60,199,1);
+}
+void drawSettings() {
+  background();card(10,10,218,43,CREAM,PINK,10);label("Settings",21,19,4);center("x",210,31,2);
+  card(10,62,104,26,settingsPage==0?PINK:CREAM,INK,5);center("DISPLAY",62,75,1);
+  card(124,62,104,26,settingsPage==1?PINK:CREAM,INK,5);center("FOCUS / TOUCH",176,75,1);
+  if(settingsPage==0) {
+    card(10,98,218,57,CREAM,YELLOW,8);label("Screen brightness",20,104,2);
+    card(18,125,32,23,YELLOW,INK,4);center("-",34,137,2);
+    center(String(settings.brightness)+"%",119,136,2);
+    card(188,125,32,23,YELLOW,INK,4);center("+",204,137,2);
+    card(10,165,218,57,CREAM,PINK,8);label("RGB brightness",20,171,2);
+    card(18,192,32,23,YELLOW,INK,4);center("-",34,204,2);
+    center(String(settings.rgbLevel)+"%",119,203,2);
+    card(188,192,32,23,YELLOW,INK,4);center("+",204,204,2);
+    card(10,235,218,31,settings.rgbOn?PINK:CREAM,INK,6);label("RGB light",20,242,2);center(settings.rgbOn?"ON":"OFF",200,251,2);
+    card(10,277,218,31,settings.idleOn?YELLOW:CREAM,INK,6);label("Idle colors",20,284,2);center(settings.idleOn?"ON":"OFF",200,293,2);
+  } else {
+    card(10,98,218,57,CREAM,YELLOW,8);label("Default focus time",20,104,2);
+    card(18,125,32,23,YELLOW,INK,4);center("-",34,137,2);
+    center(String(settings.focusMinutes)+" min",119,136,2);
+    card(188,125,32,23,YELLOW,INK,4);center("+",204,137,2);
+    card(10,169,218,32,settings.screenBlink?PINK:CREAM,INK,6);label("Screen alert",20,177,2);center(settings.screenBlink?"ON":"OFF",200,185,2);
+    card(10,215,218,36,YELLOW,INK,7);center("Calibrate touch",119,233,2);
+    card(10,267,218,36,CREAM,INK,7);center("Restore defaults",119,285,2);
+  }
+  if(resetSettingsConfirm) {
+    card(14,93,210,166,CREAM,INK,10);center("Reset settings?",119,115,2);
+    center("Lights, brightness & timer",119,145,1);
+    center("Tasks and touch stay saved",119,165,1);
+    card(24,209,85,34,YELLOW,INK,6);center("Cancel",66,226,2);
+    card(125,209,85,34,PINK,INK,6);center("Reset",167,226,2);
   }
 }
 String focusClock(uint32_t now) {
@@ -168,10 +277,10 @@ void drawFocus() {
   if(focus.state==FocusTimer::READY) {
     card(10,10,218,43,CREAM,PINK,10);label("Pomodoro",22,19,4);
     center("x",209,31,2);
-    center("MAKE TIME FOR ONE THING",120,69,1,CREAM);
-    card(10,84,218,101,CREAM,YELLOW,12);
+    selectedTaskStrip();
+    card(10,94,218,91,CREAM,YELLOW,12);
     center(focusClock(now),120,124,6);
-    center("YOUR FOCUS SESSION",120,165,1,MUTED);
+    int i=focusedTaskIndex();center(i>=0?taskSummary(i):"Choose a task",120,165,1,MUTED);
     card(10,198,44,36,YELLOW,INK,7);center("-",32,216,4);
     center("1 - 90 min",120,216,2,CREAM);
     card(184,198,44,36,YELLOW,INK,7);center("+",206,216,4);
@@ -181,7 +290,7 @@ void drawFocus() {
     return;
   }
   if(focus.state==FocusTimer::FINISHED) {
-    bool pulse=focus.alarmPulse(now);
+    bool pulse=settings.screenBlink && focus.alarmPulse(now);
     if(pulse)ui.fillSprite(YELLOW);
     card(10,10,218,43,CREAM,PINK,10);center("SESSION COMPLETE",119,31,2);
     uint16_t confetti[3]={PINK,BLUE,CREAM};
@@ -195,14 +304,15 @@ void drawFocus() {
     ui.fillCircle(120,122,24,YELLOW);ui.drawCircle(120,122,24,INK);
     for(int k=0;k<3;k++){ui.drawLine(106,122+k,117,133+k,INK);ui.drawLine(117,133+k,135,111+k,INK);}
     center("Nice work!",119,166,4);center("Time for a break.",119,194,2);
-    center("Your focus session is done",120,241,1,pulse?INK:CREAM);
+    int i=focusedTaskIndex();
+    taskName(i>=0?String(tasks[i].text):"Focus session complete",20,231,200,1,pulse?INK:CREAM);
     card(10,273,218,38,PINK,INK,9);center("BACK TO TASKS",119,292,2);
     return;
   }
   bool paused=focus.state==FocusTimer::PAUSED;
   card(10,10,218,43,CREAM,paused?PINK:BLUE,10);center(paused?"TAKE A BREATH":"FOCUS TIME",119,31,2);
-  center(paused?"PAUSED - YOUR TIME IS SAFE":"ONE TASK. ONE MOMENT.",120,65,1,CREAM);
-  ui.fillCircle(122,157,79,INK);ui.fillCircle(120,153,79,CREAM);ui.drawCircle(120,153,79,INK);
+  selectedTaskStrip();
+  ui.fillCircle(122,170,72,INK);ui.fillCircle(120,166,72,CREAM);ui.drawCircle(120,166,72,INK);
   float progress=focus.progress(now);
   int completed=(int)(progress*60);
   for(int i=0;i<60;i++) {
@@ -210,12 +320,12 @@ void drawFocus() {
     uint16_t color=i<completed?(i<30?BLUE:(i<48?PINK:YELLOW)):MUTED;
     for(int k=-1;k<=1;k++){
       float a=angle+k*.007f;
-      ui.drawLine(120+cosf(a)*69,153+sinf(a)*69,120+cosf(a)*75,153+sinf(a)*75,color);
+      ui.drawLine(120+cosf(a)*62,166+sinf(a)*62,120+cosf(a)*68,166+sinf(a)*68,color);
     }
   }
-  if(!paused){float angle=(now%6000)/6000.f*6.2831853f-1.5707963f;ui.fillCircle(120+cosf(angle)*73,153+sinf(angle)*73,4,PINK);}
-  center(focusClock(now),120,147,6);
-  center(paused?"PAUSED":String((int)(progress*100))+"% COMPLETE",120,183,1,MUTED);
+  if(!paused){float angle=(now%6000)/6000.f*6.2831853f-1.5707963f;ui.fillCircle(120+cosf(angle)*66,166+sinf(angle)*66,4,PINK);}
+  center(focusClock(now),120,161,6);
+  center(paused?"PAUSED":String((int)(progress*100))+"% COMPLETE",120,198,1,MUTED);
   center(String(focus.minutes)+" MINUTE SESSION",120,245,1,CREAM);
   card(10,273,103,38,YELLOW,INK,8);center(paused?"Resume":"Pause",61,292,2);
   card(123,273,105,38,PINK,INK,8);center("Stop",175,292,2);
@@ -223,13 +333,15 @@ void drawFocus() {
 void updateFocus() {
   if(view!=FOCUS)return;
   uint32_t now=millis();
-  if(focus.update(now))dirty=true;
+  bool wasFinished=focus.state==FocusTimer::FINISHED;settleFocus();
+  if(!wasFinished && focus.state==FocusTimer::FINISHED)dirty=true;
   static uint32_t lastFrame=0;
   if(focus.state!=FocusTimer::READY && now-lastFrame>=100){lastFrame=now;dirty=true;}
 }
 void stopFocus() {
+  settleFocus();accountFocus(focus.state==FocusTimer::FINISHED);
   bool completed=focus.state==FocusTimer::FINISHED;
-  focus.stop();view=LIST;dirty=true;
+  focus.stop();selectedTaskId=0;creditedFocusMs=0;view=LIST;dirty=true;
   glow.trigger(completed?LedFlow::DONE:LedFlow::PAGE,millis());
 }
 void drawInput() {
@@ -270,6 +382,7 @@ void drawEditor() {
 }
 void drawCalibration() {
   background();center("Touch setup",120,17,2,CREAM);
+  center("x",218,17,2,CREAM);
   center("Tap the center of each +",120,155,1,CREAM);
   center(String(calStep+1)+" / 4",120,176,2,CREAM);
   int x=targetX[calStep],y=targetY[calStep];
@@ -277,7 +390,7 @@ void drawCalibration() {
   ui.drawFastHLine(x-10,y,21,INK);ui.drawFastVLine(x,y-10,21,INK);
 }
 void draw() {
-  if(view==LIST)drawList();else if(view==EDIT)drawEditor();else if(view==FOCUS)drawFocus();else drawCalibration();
+  if(view==LIST)drawList();else if(view==EDIT)drawEditor();else if(view==FOCUS)drawFocus();else if(view==PICK_TASK)drawTaskPicker();else if(view==SETTINGS)drawSettings();else drawCalibration();
   ui.pushSprite(0,0);dirty=false;
 }
 void openEditor(int i) { editing=i;draft=i<0?"":String(tasks[i].text);upper=false;symbols=false;view=EDIT;dirty=true; }
@@ -286,7 +399,7 @@ void commitDraft() {
   if(!clean.length()) {tell("Write a task first");glow.trigger(LedFlow::ERROR,millis());return;}
   if(editing<0 && count>=MAX_TASKS){view=LIST;tell("List full: 30 tasks");glow.trigger(LedFlow::ERROR,millis());return;}
   int i=editing<0?count++:editing;
-  if(editing<0)tasks[i].done=false;
+  if(editing<0){tasks[i]={};tasks[i].id=nextTaskId++;if(nextTaskId==0)nextTaskId=1;}
   clean.toCharArray(tasks[i].text,MAX_TEXT+1);page=i/3;
   if(saveTasks())glow.trigger(editing<0?LedFlow::ADD:LedFlow::EDIT_TASK,millis());
   view=LIST;dirty=true;
@@ -314,26 +427,67 @@ void tap(int x,int y) {
     else if(hit(x,y,10,289,218,31) && undoUntil && (int32_t)(undoUntil-millis())>0 && count<MAX_TASKS) {
       for(int j=count;j>removedAt;j--)tasks[j]=tasks[j-1];tasks[removedAt]=removed;count++;page=removedAt/3;
       undoUntil=0;if(saveTasks())glow.trigger(LedFlow::UNDO,millis());
-    } else if(hit(x,y,10,289,153,31)){focus.stop();view=FOCUS;}
-    else if(hit(x,y,173,289,55,31)){view=CALIBRATE;calStep=0;}
+    } else if(hit(x,y,10,289,145,31)){
+      if(!count){tell("Add a task to focus on");return;}
+      focus.stop();selectedTaskId=0;pickPage=page;view=PICK_TASK;
+    } else if(hit(x,y,163,289,65,31)){view=SETTINGS;settingsPage=0;resetSettingsConfirm=false;}
+  } else if(view==PICK_TASK) {
+    if(hit(x,y,190,10,38,43)){stopFocus();return;}
+    if(hit(x,y,10,80,218,170)) {
+      int row=(y-80)/59,i=pickPage*3+row;
+      if(row<3 && (y-80)%59<52 && i<count) {
+        selectedTaskId=tasks[i].id;creditedFocusMs=0;focusCompletionLogged=false;
+        focus.configure(settings.focusMinutes);view=FOCUS;
+      }
+    } else if(hit(x,y,10,267,42,33) && pickPage>0)pickPage--;
+    else if(hit(x,y,186,267,42,33) && (pickPage+1)*3<count)pickPage++;
+  } else if(view==SETTINGS) {
+    if(resetSettingsConfirm) {
+      if(hit(x,y,24,209,85,34))resetSettingsConfirm=false;
+      else if(hit(x,y,125,209,85,34)){settings=UserSettings();focus.configure(settings.focusMinutes);saveSettings();resetSettingsConfirm=false;}
+      return;
+    }
+    if(hit(x,y,190,10,38,43)){view=LIST;return;}
+    if(hit(x,y,10,62,104,26)){settingsPage=0;return;}
+    if(hit(x,y,124,62,104,26)){settingsPage=1;return;}
+    bool changed=false;
+    if(settingsPage==0) {
+      if(hit(x,y,18,125,32,23)){settings.brightness=max(10,(int)settings.brightness-10);changed=true;}
+      else if(hit(x,y,188,125,32,23)){settings.brightness=min(100,(int)settings.brightness+10);changed=true;}
+      else if(hit(x,y,18,192,32,23)){settings.rgbLevel=max(0,(int)settings.rgbLevel-10);changed=true;}
+      else if(hit(x,y,188,192,32,23)){settings.rgbLevel=min(100,(int)settings.rgbLevel+10);changed=true;}
+      else if(hit(x,y,10,235,218,31)){settings.rgbOn=!settings.rgbOn;changed=true;}
+      else if(hit(x,y,10,277,218,31)){settings.idleOn=!settings.idleOn;changed=true;}
+    } else {
+      if(hit(x,y,18,125,32,23)){settings.focusMinutes=max(1,(int)settings.focusMinutes-1);changed=true;}
+      else if(hit(x,y,188,125,32,23)){settings.focusMinutes=min(90,(int)settings.focusMinutes+1);changed=true;}
+      else if(hit(x,y,10,169,218,32)){settings.screenBlink=!settings.screenBlink;changed=true;}
+      else if(hit(x,y,10,215,218,36)){view=CALIBRATE;calStep=0;}
+      else if(hit(x,y,10,267,218,36))resetSettingsConfirm=true;
+    }
+    if(changed){focus.configure(settings.focusMinutes);saveSettings();}
+  } else if(view==CALIBRATE) {
+    if(hit(x,y,193,0,47,32))view=SETTINGS;
   } else if(view==FOCUS) {
-    focus.update(millis());
+    settleFocus();
     if(focus.state==FocusTimer::READY) {
       if(hit(x,y,190,10,38,43)){stopFocus();return;}
+      if(hit(x,y,10,58,218,29)){pickPage=0;view=PICK_TASK;return;}
       if(hit(x,y,10,198,44,36))focus.configure(focus.minutes-1);
       else if(hit(x,y,184,198,44,36))focus.configure(focus.minutes+1);
       else if(hit(x,y,10,244,218,25)) {
         int slot=(x-10)/76;
         if(slot<3 && (x-10)%76<66){const int values[3]={5,25,50};focus.configure(values[slot]);}
       } else if(hit(x,y,10,280,218,32)) {
-        store.putUInt("focusMin",focus.minutes);focus.start(millis());
+        if(focusedTaskIndex()<0){pickPage=0;view=PICK_TASK;return;}
+        settings.focusMinutes=focus.minutes;saveSettings();creditedFocusMs=0;focusCompletionLogged=false;focus.start(millis());
       }
     } else if(focus.state==FocusTimer::FINISHED) {
       if(hit(x,y,10,273,218,38))stopFocus();
     } else {
       if(hit(x,y,123,273,105,38))stopFocus();
       else if(hit(x,y,10,273,103,38)) {
-        if(focus.state==FocusTimer::RUNNING)focus.pause(millis());else focus.resume(millis());
+        if(focus.state==FocusTimer::RUNNING){focus.pause(millis());accountFocus(focus.state==FocusTimer::FINISHED);}else focus.resume(millis());
       }
     }
   } else if(view==EDIT) {
@@ -363,7 +517,7 @@ void calibrationPoint(int x,int y) {
       store.putInt("calrot",SCREEN_ROTATION);
       tell("Touch ready");
     } else tell("Setup failed - try again");
-    view=LIST;
+    view=SETTINGS;
   }
   dirty=true;
 }
@@ -376,15 +530,35 @@ void diagnostics() {
       Serial.printf("TASKPOP view=%d count=%d page=%d stored=%d draft=%s\n",view,count,page,storageOK,draft.c_str());
       for(int i=0;i<count;i++)Serial.printf("TASK %d %d %s\n",i,tasks[i].done,tasks[i].text);
     } else if(serialLine=="CONFIG") {
-      Serial.printf("CONFIG version=1.3 lcd_rotation=%d touch_rotation=%d calibration=%d,%d,%d,%d\n",lcd.getRotation(),SCREEN_ROTATION,xmin,xmax,ymin,ymax);
+      Serial.printf("CONFIG version=1.4 lcd_rotation=%d touch_rotation=%d calibration=%d,%d,%d,%d\n",lcd.getRotation(),SCREEN_ROTATION,xmin,xmax,ymin,ymax);
     } else if(serialLine=="FOCUSSTATUS") {
-      focus.update(millis());
-      Serial.printf("FOCUS view=%d state=%d minutes=%u remaining=%lu pulse=%d\n",view,focus.state,focus.minutes,(unsigned long)focus.remaining(millis()),focus.alarmPulse(millis()));
+      settleFocus();
+      Serial.printf("FOCUS view=%d state=%d minutes=%u remaining=%lu pulse=%d task=%lu\n",view,focus.state,focus.minutes,(unsigned long)focus.remaining(millis()),focus.alarmPulse(millis()),(unsigned long)selectedTaskId);
+    } else if(serialLine=="WORKSTATS") {
+      for(int i=0;i<count;i++)Serial.printf("WORK row=%d id=%lu sessions=%u seconds=%lu\n",i,(unsigned long)tasks[i].id,tasks[i].sessions,(unsigned long)tasks[i].focusSeconds);
+    } else if(serialLine=="SETTINGS") {
+      Serial.printf("SETTINGS screen=%u rgb=%u rgbOn=%d idle=%d blink=%d minutes=%u pwm=%lu\n",settings.brightness,settings.rgbLevel,settings.rgbOn,settings.idleOn,settings.screenBlink,settings.focusMinutes,(unsigned long)ledcRead(0));
     } else if(serialLine=="LEDSTATUS") {
       Serial.printf("LED event=%d seq=%lu elapsed=%lu duty=%u,%u,%u hw=%lu,%lu,%lu\n",(int)glow.event,(unsigned long)glow.eventCount,(unsigned long)(millis()-glow.started),ledDuty[0],ledDuty[1],ledDuty[2],(unsigned long)ledcRead(4),(unsigned long)ledcRead(5),(unsigned long)ledcRead(6));
     } else if(serialLine.startsWith("LEDTEST ")) {
       int event=serialLine.substring(8).toInt();
       if(event>LedFlow::IDLE && event<=LedFlow::PAGE)glow.trigger((LedFlow::Event)event,millis());
+    } else if(serialLine=="SCREENRLE") {
+      // Loss-detecting, compact diagnostics for USB UARTs that drop raw screenshot bytes.
+      draw();Serial.println("RLE 240 320");
+      for(int i=0;i<16;i++){Serial.printf("%04x",palette[i]);Serial.print(i==15?'\n':',');}
+      for(int y=0;y<H;y++) {
+        String line=String(y)+"|";uint32_t checksum=2166136261UL;
+        int previous=-1,run=0;
+        for(int x=0;x<W;x++) {
+          int pixel=ui.readPixelValue(x,y);checksum=(checksum^(uint32_t)pixel)*16777619UL;
+          if(pixel==previous)run++;
+          else {if(run)line+=String(previous,HEX)+":"+String(run)+",";previous=pixel;run=1;}
+        }
+        line+=String(previous,HEX)+":"+String(run)+"|"+String(checksum,HEX);
+        Serial.println(line);Serial.flush();settleFocus();updateGlow();delay(1);
+      }
+      Serial.println("ENDRLE");
     } else if(serialLine=="SCREEN") {
       draw();Serial.println("RGB565 240 320");
       uint8_t row[W*2];
@@ -392,7 +566,7 @@ void diagnostics() {
         for(int x=0;x<W;x++){uint16_t p=ui.readPixel(x,y);row[x*2]=p>>8;row[x*2+1]=p&255;}
         Serial.write(row,sizeof(row));Serial.flush();
         // Pace diagnostic captures for USB UART adapters; keep the timer's RGB alert live.
-        focus.update(millis());updateGlow();delay(3);
+        settleFocus();updateGlow();delay(3);
       }
       Serial.println("\nENDSCREEN");
     }
@@ -405,6 +579,7 @@ void setup() {
   pinMode(4,OUTPUT);digitalWrite(4,HIGH); // Mute unused audio amplifier.
   for(int pin: {5,27}){pinMode(pin,OUTPUT);digitalWrite(pin,HIGH);}
   store.begin("taskpop",false);loadTasks();
+  if(migrationPending){saveTasks();migrationPending=false;}
   Serial.println("TASKPOP STORAGE OK");
   lcd.init();lcd.setRotation(SCREEN_ROTATION);lcd.invertDisplay(false);
   Serial.println("TASKPOP LCD OK");
@@ -412,9 +587,10 @@ void setup() {
   if(!ui.createSprite(W,H)){Serial.println("TASKPOP SCREEN MEMORY ERROR");lcd.fillScreen(TFT_BLACK);lcd.setTextColor(TFT_WHITE);lcd.drawString("Screen memory error",8,40,2);while(true)delay(1000);}
   Serial.println("TASKPOP FRAMEBUFFER OK");
   ui.createPalette(palette,16);
+  ledcSetup(0,5000,8);ledcAttachPin(21,0);applyBacklight();
   touchBus.begin(25,39,32);touch.begin(touchBus);touch.setRotation(SCREEN_ROTATION);
   Serial.println("TASKPOP TOUCH OK");
-  beginGlow();draw();Serial.println("TASKPOP READY 1.3 FOCUS");
+  beginGlow();draw();Serial.println("TASKPOP READY 1.4 TASK FOCUS + SETTINGS");
 }
 void loop() {
   static bool held=false;static uint32_t releasedAt=0, started=0;static int rawX=0,rawY=0,samples=0;
@@ -429,8 +605,9 @@ void loop() {
   if(!down && held){
     held=false;releasedAt=millis();
     if(samples>=2 && releasedAt-started>=20){int rx=rawX/samples,ry=rawY/samples;
-      if(view==CALIBRATE)calibrationPoint(rx,ry);
-      else tap(constrain(map(rx,xmin,xmax,0,W-1),0,W-1),constrain(map(ry,ymin,ymax,0,H-1),0,H-1));
+      int tx=constrain(map(rx,xmin,xmax,0,W-1),0,W-1),ty=constrain(map(ry,ymin,ymax,0,H-1),0,H-1);
+      if(view==CALIBRATE && !hit(tx,ty,193,0,47,32))calibrationPoint(rx,ry);
+      else tap(tx,ty);
     }
   }
   if(undoUntil && (int32_t)(millis()-undoUntil)>=0){undoUntil=0;dirty=true;}
