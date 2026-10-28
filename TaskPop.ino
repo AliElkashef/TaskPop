@@ -4,8 +4,10 @@
 #include <XPT2046_Touchscreen.h>
 #include <Preferences.h>
 #include "LedFlow.h"
+#include "FocusTimer.h"
 
 LedFlow glow;
+FocusTimer focus;
 uint8_t ledDuty[3]={255,255,255};
 const int ledPins[3]={22,16,17}; // Common-anode RGB: low = on.
 const int ledChannels[3]={4,5,6};
@@ -13,6 +15,12 @@ void updateGlow() {
   static uint32_t last=0;
   uint32_t now=millis();if(now-last<16)return;last=now;
   LedFlow::Color c=glow.sample(now);
+  if(focus.state==FocusTimer::FINISHED) {
+    c=LedFlow::scale({.12f,1.f,.30f},focus.alarmPulse(now)?.92f:0.f);
+  } else if(focus.state==FocusTimer::RUNNING || focus.state==FocusTimer::PAUSED) {
+    float breath=.28f+.055f*sinf(now*.002f);
+    c=LedFlow::scale(focus.state==FocusTimer::PAUSED?LedFlow::Color{.94f,.33f,.84f}:LedFlow::Color{.13f,.43f,1.f},breath);
+  }
   float components[3]={c.r,c.g,c.b};
   for(int i=0;i<3;i++) {
     ledDuty[i]=255-LedFlow::pwm(components[i]);
@@ -45,7 +53,7 @@ Task tasks[MAX_TASKS], removed;
 int count=0, page=0, editing=-1, removedAt=-1;
 String draft, serialLine;
 bool upper=false, symbols=false, dirty=true, storageOK=true;
-enum View { LIST, EDIT, CALIBRATE };
+enum View { LIST, EDIT, CALIBRATE, FOCUS };
 View view=LIST;
 uint32_t undoUntil=0, noticeUntil=0;
 String notice;
@@ -98,6 +106,7 @@ void loadTasks() {
     int oldMin=xmin;xmin=4095-xmax;xmax=4095-oldMin;
     oldMin=ymin;ymin=4095-ymax;ymax=4095-oldMin;
   }
+  focus.configure(store.getUInt("focusMin",25));
 }
 void drawList() {
   background();
@@ -142,7 +151,86 @@ void drawList() {
   if(undoUntil && (int32_t)(undoUntil-millis())>0) {
     card(10,289,218,23,YELLOW,INK,7);center("Removed  -  tap to UNDO",119,301,1);
   } else if(noticeUntil && (int32_t)(noticeUntil-millis())>0) center(notice,120,302,1,CREAM);
-  else {label("TAP TASK TO EDIT",11,300,1,CREAM); card(173,290,55,23,CREAM,INK,5);center("TOUCH",200,302,1);}
+  else {
+    card(10,289,153,25,PINK,INK,6);
+    ui.drawCircle(25,301,7,INK);ui.drawLine(25,301,25,297,INK);ui.drawLine(25,301,29,303,INK);
+    center("FOCUS",98,302,2);
+    card(173,290,55,23,CREAM,INK,5);center("TOUCH",200,302,1);
+  }
+}
+String focusClock(uint32_t now) {
+  uint32_t seconds=(focus.remaining(now)+999)/1000;
+  char value[8];snprintf(value,sizeof(value),"%02lu:%02lu",(unsigned long)(seconds/60),(unsigned long)(seconds%60));return String(value);
+}
+void drawFocus() {
+  uint32_t now=millis();
+  background();
+  if(focus.state==FocusTimer::READY) {
+    card(10,10,218,43,CREAM,PINK,10);label("Pomodoro",22,19,4);
+    center("x",209,31,2);
+    center("MAKE TIME FOR ONE THING",120,69,1,CREAM);
+    card(10,84,218,101,CREAM,YELLOW,12);
+    center(focusClock(now),120,124,6);
+    center("YOUR FOCUS SESSION",120,165,1,MUTED);
+    card(10,198,44,36,YELLOW,INK,7);center("-",32,216,4);
+    center("1 - 90 min",120,216,2,CREAM);
+    card(184,198,44,36,YELLOW,INK,7);center("+",206,216,4);
+    const int presets[3]={5,25,50};
+    for(int i=0;i<3;i++){card(10+i*76,244,66,25,focus.minutes==presets[i]?PINK:CREAM,INK,6);center(String(presets[i])+" min",43+i*76,257,2);}
+    card(10,280,218,32,PINK,INK,8);center("START FOCUS",119,296,2);
+    return;
+  }
+  if(focus.state==FocusTimer::FINISHED) {
+    bool pulse=focus.alarmPulse(now);
+    if(pulse)ui.fillSprite(YELLOW);
+    card(10,10,218,43,CREAM,PINK,10);center("SESSION COMPLETE",119,31,2);
+    uint16_t confetti[3]={PINK,BLUE,CREAM};
+    for(int i=0;i<12;i++){
+      float angle=i*6.2831853f/12;
+      int radius=81+((now/180+i*7)%3)*4;
+      int x=120+cosf(angle)*radius,y=150+sinf(angle)*radius;
+      ui.fillRoundRect(x-3,y-3,7,7,2,confetti[i%3]);
+    }
+    card(47,85,144,127,CREAM,PINK,14);
+    ui.fillCircle(120,122,24,YELLOW);ui.drawCircle(120,122,24,INK);
+    for(int k=0;k<3;k++){ui.drawLine(106,122+k,117,133+k,INK);ui.drawLine(117,133+k,135,111+k,INK);}
+    center("Nice work!",119,166,4);center("Time for a break.",119,194,2);
+    center("Your focus session is done",120,241,1,pulse?INK:CREAM);
+    card(10,273,218,38,PINK,INK,9);center("BACK TO TASKS",119,292,2);
+    return;
+  }
+  bool paused=focus.state==FocusTimer::PAUSED;
+  card(10,10,218,43,CREAM,paused?PINK:BLUE,10);center(paused?"TAKE A BREATH":"FOCUS TIME",119,31,2);
+  center(paused?"PAUSED - YOUR TIME IS SAFE":"ONE TASK. ONE MOMENT.",120,65,1,CREAM);
+  ui.fillCircle(122,157,79,INK);ui.fillCircle(120,153,79,CREAM);ui.drawCircle(120,153,79,INK);
+  float progress=focus.progress(now);
+  int completed=(int)(progress*60);
+  for(int i=0;i<60;i++) {
+    float angle=(i*6.f-90.f)*.0174532925f;
+    uint16_t color=i<completed?(i<30?BLUE:(i<48?PINK:YELLOW)):MUTED;
+    for(int k=-1;k<=1;k++){
+      float a=angle+k*.007f;
+      ui.drawLine(120+cosf(a)*69,153+sinf(a)*69,120+cosf(a)*75,153+sinf(a)*75,color);
+    }
+  }
+  if(!paused){float angle=(now%6000)/6000.f*6.2831853f-1.5707963f;ui.fillCircle(120+cosf(angle)*73,153+sinf(angle)*73,4,PINK);}
+  center(focusClock(now),120,147,6);
+  center(paused?"PAUSED":String((int)(progress*100))+"% COMPLETE",120,183,1,MUTED);
+  center(String(focus.minutes)+" MINUTE SESSION",120,245,1,CREAM);
+  card(10,273,103,38,YELLOW,INK,8);center(paused?"Resume":"Pause",61,292,2);
+  card(123,273,105,38,PINK,INK,8);center("Stop",175,292,2);
+}
+void updateFocus() {
+  if(view!=FOCUS)return;
+  uint32_t now=millis();
+  if(focus.update(now))dirty=true;
+  static uint32_t lastFrame=0;
+  if(focus.state!=FocusTimer::READY && now-lastFrame>=100){lastFrame=now;dirty=true;}
+}
+void stopFocus() {
+  bool completed=focus.state==FocusTimer::FINISHED;
+  focus.stop();view=LIST;dirty=true;
+  glow.trigger(completed?LedFlow::DONE:LedFlow::PAGE,millis());
 }
 void drawInput() {
   ui.fillRoundRect(10,45,218,72,10,CREAM);ui.drawRoundRect(10,45,218,72,10,INK);
@@ -189,7 +277,7 @@ void drawCalibration() {
   ui.drawFastHLine(x-10,y,21,INK);ui.drawFastVLine(x,y-10,21,INK);
 }
 void draw() {
-  if(view==LIST)drawList();else if(view==EDIT)drawEditor();else drawCalibration();
+  if(view==LIST)drawList();else if(view==EDIT)drawEditor();else if(view==FOCUS)drawFocus();else drawCalibration();
   ui.pushSprite(0,0);dirty=false;
 }
 void openEditor(int i) { editing=i;draft=i<0?"":String(tasks[i].text);upper=false;symbols=false;view=EDIT;dirty=true; }
@@ -226,7 +314,28 @@ void tap(int x,int y) {
     else if(hit(x,y,10,289,218,31) && undoUntil && (int32_t)(undoUntil-millis())>0 && count<MAX_TASKS) {
       for(int j=count;j>removedAt;j--)tasks[j]=tasks[j-1];tasks[removedAt]=removed;count++;page=removedAt/3;
       undoUntil=0;if(saveTasks())glow.trigger(LedFlow::UNDO,millis());
-    } else if(hit(x,y,173,289,55,31)){view=CALIBRATE;calStep=0;}
+    } else if(hit(x,y,10,289,153,31)){focus.stop();view=FOCUS;}
+    else if(hit(x,y,173,289,55,31)){view=CALIBRATE;calStep=0;}
+  } else if(view==FOCUS) {
+    focus.update(millis());
+    if(focus.state==FocusTimer::READY) {
+      if(hit(x,y,190,10,38,43)){stopFocus();return;}
+      if(hit(x,y,10,198,44,36))focus.configure(focus.minutes-1);
+      else if(hit(x,y,184,198,44,36))focus.configure(focus.minutes+1);
+      else if(hit(x,y,10,244,218,25)) {
+        int slot=(x-10)/76;
+        if(slot<3 && (x-10)%76<66){const int values[3]={5,25,50};focus.configure(values[slot]);}
+      } else if(hit(x,y,10,280,218,32)) {
+        store.putUInt("focusMin",focus.minutes);focus.start(millis());
+      }
+    } else if(focus.state==FocusTimer::FINISHED) {
+      if(hit(x,y,10,273,218,38))stopFocus();
+    } else {
+      if(hit(x,y,123,273,105,38))stopFocus();
+      else if(hit(x,y,10,273,103,38)) {
+        if(focus.state==FocusTimer::RUNNING)focus.pause(millis());else focus.resume(millis());
+      }
+    }
   } else if(view==EDIT) {
     if(hit(x,y,10,127,65,32)){view=LIST;return;}
     if(hit(x,y,83,127,65,32)){if(editing>=0)removeTask(editing);else draft="";return;}
@@ -267,7 +376,10 @@ void diagnostics() {
       Serial.printf("TASKPOP view=%d count=%d page=%d stored=%d draft=%s\n",view,count,page,storageOK,draft.c_str());
       for(int i=0;i<count;i++)Serial.printf("TASK %d %d %s\n",i,tasks[i].done,tasks[i].text);
     } else if(serialLine=="CONFIG") {
-      Serial.printf("CONFIG version=1.2 lcd_rotation=%d touch_rotation=%d calibration=%d,%d,%d,%d\n",lcd.getRotation(),SCREEN_ROTATION,xmin,xmax,ymin,ymax);
+      Serial.printf("CONFIG version=1.3 lcd_rotation=%d touch_rotation=%d calibration=%d,%d,%d,%d\n",lcd.getRotation(),SCREEN_ROTATION,xmin,xmax,ymin,ymax);
+    } else if(serialLine=="FOCUSSTATUS") {
+      focus.update(millis());
+      Serial.printf("FOCUS view=%d state=%d minutes=%u remaining=%lu pulse=%d\n",view,focus.state,focus.minutes,(unsigned long)focus.remaining(millis()),focus.alarmPulse(millis()));
     } else if(serialLine=="LEDSTATUS") {
       Serial.printf("LED event=%d seq=%lu elapsed=%lu duty=%u,%u,%u hw=%lu,%lu,%lu\n",(int)glow.event,(unsigned long)glow.eventCount,(unsigned long)(millis()-glow.started),ledDuty[0],ledDuty[1],ledDuty[2],(unsigned long)ledcRead(4),(unsigned long)ledcRead(5),(unsigned long)ledcRead(6));
     } else if(serialLine.startsWith("LEDTEST ")) {
@@ -276,7 +388,12 @@ void diagnostics() {
     } else if(serialLine=="SCREEN") {
       draw();Serial.println("RGB565 240 320");
       uint8_t row[W*2];
-      for(int y=0;y<H;y++){for(int x=0;x<W;x++){uint16_t p=ui.readPixel(x,y);row[x*2]=p>>8;row[x*2+1]=p&255;}Serial.write(row,sizeof(row));}
+      for(int y=0;y<H;y++){
+        for(int x=0;x<W;x++){uint16_t p=ui.readPixel(x,y);row[x*2]=p>>8;row[x*2+1]=p&255;}
+        Serial.write(row,sizeof(row));Serial.flush();
+        // Pace diagnostic captures for USB UART adapters; keep the timer's RGB alert live.
+        focus.update(millis());updateGlow();delay(3);
+      }
       Serial.println("\nENDSCREEN");
     }
     serialLine="";
@@ -297,7 +414,7 @@ void setup() {
   ui.createPalette(palette,16);
   touchBus.begin(25,39,32);touch.begin(touchBus);touch.setRotation(SCREEN_ROTATION);
   Serial.println("TASKPOP TOUCH OK");
-  beginGlow();draw();Serial.println("TASKPOP READY 1.2 USB BOTTOM");
+  beginGlow();draw();Serial.println("TASKPOP READY 1.3 FOCUS");
 }
 void loop() {
   static bool held=false;static uint32_t releasedAt=0, started=0;static int rawX=0,rawY=0,samples=0;
@@ -318,5 +435,5 @@ void loop() {
   }
   if(undoUntil && (int32_t)(millis()-undoUntil)>=0){undoUntil=0;dirty=true;}
   if(noticeUntil && (int32_t)(millis()-noticeUntil)>=0){noticeUntil=0;dirty=true;}
-  diagnostics();if(dirty)draw();updateGlow();delay(8);
+  diagnostics();updateFocus();if(dirty)draw();updateGlow();delay(8);
 }

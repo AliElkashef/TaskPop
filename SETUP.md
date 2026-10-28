@@ -44,7 +44,7 @@ arduino-cli compile \
 
 ## Install the ready-built firmware
 
-Download and extract `TaskPop-firmware-v1.2.zip`. With esptool installed, run this from the extracted folder, replacing the port:
+Download and extract `TaskPop-firmware-v1.3.zip`. With esptool installed, run this from the extracted folder, replacing the port:
 
 ```sh
 python -m esptool --chip esp32 --port /dev/cu.usbserial-110 --baud 115200 \
@@ -73,9 +73,12 @@ A full flash erase removes saved tasks and calibration. The downloadable firmwar
 - The keyboard supports English letters, numbers, and symbols.
 - For touch alignment, tap **TOUCH** and press the center of each of the four targets. Calibration is saved automatically.
 - Use a deliberate press or a suitable stylus on the resistive touchscreen.
+- Tap the pink **FOCUS** button for the Pomodoro timer. Choose 1–90 minutes with **−/+**, or use the 5/25/50-minute presets, then tap **START FOCUS**.
+- **Pause/Resume** preserves remaining time. **Stop** returns directly to the task list.
+- When the countdown finishes, the screen and RGB LED pulse until **BACK TO TASKS** is pressed. The selected duration is saved; an active session resets after power loss.
 
 ## Files
 
-`TaskPop.ino` contains the interface and task storage. `LedFlow.h` controls the RGB animations without blocking the interface. `TaskPop_Display.h` holds the board-specific display configuration.
+`TaskPop.ino` contains the interface and task storage. `LedFlow.h` controls the RGB animations without blocking the interface. `FocusTimer.h` handles monotonic countdown timing, pause/resume, and the completion alert. `TaskPop_Display.h` holds the board-specific display configuration.
 
 The software was checked on the device for task entry, editing, completion, deletion, undo, paging, persistence, RGB event output, and display rotation. Screenshots show sample tasks.

@@ -27,6 +27,7 @@ Task Pop turns a small ESP32 touchscreen into a dedicated home for your daily ta
 - **Stay in control.** Mark tasks done, delete them, or undo an accidental deletion.
 - **Pick up where you left off.** Tasks stay saved when power is disconnected.
 - **Feel the progress.** The onboard RGB LED responds with a different light gesture for each action.
+- **Find your focus.** Set a Pomodoro timer, pause when you need to, and get a screen-and-light celebration when time is up.
 - **Keep it simple.** Up to 30 tasks, three per page, with a bright teal, cream, pink, and yellow interface.
 
 ## A little personality, built in
@@ -42,6 +43,16 @@ Task Pop turns a small ESP32 touchscreen into a dedicated home for your daily ta
 
 Light animations run alongside the interface, so you can keep using the touchscreen.
 
+## Make time for one thing
+
+Tap the pink **FOCUS** button beside **TOUCH** to open your Pomodoro timer. Pick **5, 25, or 50 minutes**, or adjust the duration from **1 to 90 minutes**.
+
+<div align="center">
+<img src="focus-setup.png" width="240" alt="Task Pop Pomodoro setup with a 25-minute session and quick duration presets">
+</div>
+
+Follow the moving progress ring as the timer counts down. **Pause** keeps your remaining time; **Stop** takes you straight back to your tasks. At the end, the screen pulses yellow and the RGB LED flashes green until you tap **BACK TO TASKS**. The duration you start with is remembered for next time.
+
 ## Made for a small screen
 
 **2.8-inch touch display · ESP32 · Onboard RGB LED · USB power**
@@ -52,7 +63,7 @@ CYD boards come in different variants; the included display and touch configurat
 
 ## Get started
 
-1. Get the source or [ready-built firmware](TaskPop-firmware-v1.2.zip).
+1. Get the source or [ready-built firmware](TaskPop-firmware-v1.3.zip).
 2. Follow the short [setup guide](SETUP.md) for your display.
 3. Power it over USB, tap **+**, and make your first plan.
 
