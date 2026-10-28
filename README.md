@@ -2,6 +2,8 @@
 
 # Task Pop
 
+<img src="taskpop-poster.png" width="100%" alt="Task Pop product poster showing the task interface on a yellow CYD ESP32 display in the teal, cream, pink and yellow theme">
+
 ### A little screen for your big plans.
 
 A colorful, touch-first to-do companion for your desk.  
